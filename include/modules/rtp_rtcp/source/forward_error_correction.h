@@ -16,7 +16,6 @@
 #include <list>
 #include <memory>
 #include <vector>
-#include <chrono>  
 #include <immintrin.h> // 包含 AVX2 和 SSE 指令集，用于xor加速
 #include "absl/container/inlined_vector.h"
 #include "api/scoped_refptr.h"
@@ -25,7 +24,7 @@
 class ForwardErrorCorrection {
 
  public:
-#pragma pack(push, 1)  // 保存当前对齐方式，设置为1字节对齐
+
   class Packet {
    public:
     Packet();
@@ -38,18 +37,17 @@ class ForwardErrorCorrection {
     // reaches zero.
     virtual int32_t Release();
 
-    uint16_t packet_mask;            // 2字节的掩码内容
-    uint8_t  group_number;           // 1字节的组号信息
-    uint8_t  sequence_number;        // 1字节的组内序号信息
-    uint8_t  k;                      // 1字节的数据包数量信息
-    uint16_t data_length;            // 2字节的数据长度信息
+    uint16_t packet_mask;            // 2�ֽڵ���������
+    uint8_t  group_number;           // 1�ֽڵ������Ϣ
+    uint8_t  sequence_number;        // 1�ֽڵ����������Ϣ
+    uint8_t  k;                      // 1�ֽڵ����ݰ�������Ϣ
+    uint8_t  r;                      // 1�ֽڵ������������Ϣ
 
-    static constexpr size_t kMaxDataSize = 2000; // Maximum size of data in a packet.
-    uint8_t data[kMaxDataSize];      // 数据字段
+    static constexpr size_t kMaxDataSize = 2000;
+    uint8_t data[kMaxDataSize];  // �����ֶ����ݣ���󳤶�Ϊ2000�ֽڣ�
 
     int32_t ref_count_;  // Counts the number of references to a packet.
   };
-#pragma pack(pop)  // 恢复默认对齐方式
 
   // TODO(holmer): Refactor into a proper class.
   class SortablePacket {
@@ -127,7 +125,7 @@ class ForwardErrorCorrection {
                 FecMaskType fec_mask_type,
                 std::vector<std::unique_ptr<Packet>>& fec_packets);
 
-  // sendto_fec
+  // ��д���sendto_fec����
   void SendByUlpfec(SOCKET so,
                     const char* buf,
                     int len,
@@ -138,6 +136,8 @@ class ForwardErrorCorrection {
                     int r,
                     int bitrate,
                     double packet_loss_rate);
+
+  void Send_PacketByFEC(const char* buf, int len, int k, int r);
 
   void MediaPacketsInit(int k);
 
@@ -155,13 +155,15 @@ class ForwardErrorCorrection {
   // Frees all memory allocated by this class.
   void ResetState(RecoveredPacketList* recovered_packets);
 
-  //recvfrom_fec
+  //��д��Ľ��պ���recvfrom_fec
   int RecvByUlpfec(SOCKET so,
       char* buf,
       int len,
       int flags,
       sockaddr* from,
       int* fromlen);
+
+  int Recv_PacketByFEC(const char* buf, int len);
 
   // 邢启航09_09添加内容：统计发送丢失数据包数量
   UINT32 total_lose_src_packets = 0;
@@ -194,11 +196,7 @@ class ForwardErrorCorrection {
 
  private:
 
-  void XorPayloads( uint16_t src_data_length,
-                           const uint8_t* src, 
-                           uint16_t* dst_data_length,
-                           uint8_t* dst, 
-                           size_t length);
+  static void XorPayloads(const uint8_t* src, uint8_t* dst, size_t length);
 
   // Inserts the `received_packet` into the internal received FEC packet list
   // or into `recovered_packets`.
@@ -230,7 +228,7 @@ class ForwardErrorCorrection {
   size_t AttemptRecovery(RecoveredPacketList* recovered_packets);
 
   // Recover a missing packet.
-  bool RecoverPacket(const ReceivedFecPacket& fec_packet,
+  static bool RecoverPacket(const ReceivedFecPacket& fec_packet,
       RecoveredPacket* recovered_packet);
 
   // Get the number of missing media packets which are covered by `fec_packet`.
@@ -253,6 +251,12 @@ class ForwardErrorCorrection {
 
   bool kUseUnequalProtection = false;
 
+  bool fec_first_use = true;
+
+  bool fec_last_use = false;
+
+//   std::list<ForwardErrorCorrection::Packet*> fec_packets;
+
   int group_number = 0;
 
   int sequence_number = 0;
@@ -263,13 +267,15 @@ class ForwardErrorCorrection {
 
   RecoveredPacketList buffer_packets;
 
-  size_t max_media_packets = 16;  // recovered_packets中最大数据包数量
+  bool receive_first_use = true;
 
-  size_t max_fec_packets = 16;    // received_fec_packets_中最大FEC包数量
+  bool first_packet = true;
 
-  int packet_size = 0;
+  size_t max_media_packets = 16;  // ���ûָ��б���������ݰ�����
 
-  int fec_head_size = 7; // ULPFEC头部大小
+  size_t max_fec_packets = 16;  // ���ý��յ���FEC���б���������������
+
+  int packet_len = 0;
 };
 
 #endif  // MODULES_RTP_RTCP_SOURCE_FORWARD_ERROR_CORRECTION_H_

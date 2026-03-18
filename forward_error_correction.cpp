@@ -12,12 +12,9 @@
 #include "modules/rtp_rtcp/source/fec_private_tables_random.h"
 #include "absl/algorithm/container.h"
 #include "rtc_base/numerics/mod_ops.h"
-
-#define print_message 0 // 是否打印发送和接收的包信息
-
 ForwardErrorCorrection::~ForwardErrorCorrection() = default;
 
-ForwardErrorCorrection::Packet::Packet() : ref_count_(0), packet_mask(0), group_number(0), sequence_number(0), k(0), data_length(0) {
+ForwardErrorCorrection::Packet::Packet() : ref_count_(0), packet_mask(0), group_number(0), sequence_number(0), k(0), r(0) {
 	memset(data, 0, kMaxDataSize);
 }
 
@@ -35,7 +32,7 @@ int32_t ForwardErrorCorrection::Packet::Release() {
 	return ref_count;
 }
 
-ForwardErrorCorrection::ReceivedPacket::ReceivedPacket() = default; 
+ForwardErrorCorrection::ReceivedPacket::ReceivedPacket() = default; //??????
 
 ForwardErrorCorrection::ReceivedPacket::~ReceivedPacket() = default;
 
@@ -72,16 +69,16 @@ const uint8_t* PacketMaskTable::PickTable(FecMaskType fec_mask_type,
 	return &kPacketMaskRandomTbl[0];
 }
 
-// 初始化k个数据包
 void ForwardErrorCorrection::MediaPacketsInit(int k) {
+	// Ԥ���� k �� Packet ����
 	media_packets.resize(k);
 	for (int i = 0; i < k; i++) {
 		media_packets[i] = std::make_unique<Packet>();
 	}
 }
 
-// 初始化r个冗余包
 void ForwardErrorCorrection::FecPacketsInit(int r) {
+	// Ԥ���� r �� Packet ����
 	fec_packets.resize(r);
 	for (int i = 0; i < r; i++) {
 		fec_packets[i] = std::make_unique<Packet>();
@@ -96,20 +93,20 @@ int ForwardErrorCorrection::EncodeFec(const std::vector<std::unique_ptr<Packet>>
 	std::vector<std::unique_ptr<Packet>>& fec_packets) {
 	const size_t num_media_packets = media_packets.size();
 
-	// 检查参数有效性
-	RTC_DCHECK_GT(num_media_packets, 0);
-	RTC_DCHECK_GE(num_important_packets, 0);
-	RTC_DCHECK_LE(num_important_packets, num_media_packets);
-	RTC_DCHECK_LE(num_media_packets, 16);
+	// ????????��??
+	RTC_DCHECK_GT(num_media_packets, 0); // ?????????
+	RTC_DCHECK_GE(num_important_packets, 0); // ?????????????????
+	RTC_DCHECK_LE(num_important_packets, num_media_packets); // ???????????????????????
+	RTC_DCHECK_LE(num_media_packets, 16); // ?????????????????16
 
-	// 准备生成的FEC包
+	// ????????FEC??
 	int num_fec_packets = r;
 	RTC_DCHECK_LE(num_fec_packets, num_media_packets);
 	if (num_fec_packets == 0) {
 		return 0;
 	}
 
-	// 创建包掩码表
+	// ???????????
 	int num_media_packets_int = static_cast<int>(num_media_packets);
 	PacketMaskTable mask_table(fec_mask_type, num_media_packets_int);
 	packet_mask_size_ = PacketMaskSize(num_media_packets);
@@ -118,58 +115,36 @@ int ForwardErrorCorrection::EncodeFec(const std::vector<std::unique_ptr<Packet>>
 		num_important_packets, use_unequal_protection,
 		&mask_table, packet_masks_);
 
-	// 生成FEC包
+	// ????FEC??
 	for (int i = 0; i < num_fec_packets; ++i) {
-		// 获取当前FEC包
+		// ��ȡ��ǰ FEC ��
 		auto& fec_packet = fec_packets[i];
 
-		// 遍历media_packets，生成FEC数据
+		// ���� media_packets������ FEC ����
 		for (size_t j = 0; j < media_packets.size(); ++j) {
 			if (packet_masks_[i * packet_mask_size_ + j / 8] & (1 << (7 - (j % 8)))) {
-				XorPayloads(media_packets[j]->data_length, media_packets[j]->data, &(fec_packet->data_length), fec_packet->data, packet_size);
+				XorPayloads(media_packets[j]->data, fec_packet->data, packet_size);
 			}
 		}
 
-		// 填充FEC包头信息
+		// ��� FEC ��ͷ
 		memcpy(&fec_packet->packet_mask, &packet_masks_[i * packet_mask_size_], packet_mask_size_);
 		fec_packet->group_number = group_number;
 		fec_packet->sequence_number = sequence_number;
 		fec_packet->k = static_cast<uint8_t>(num_media_packets);
+		fec_packet->r = static_cast<uint8_t>(num_fec_packets);
 
-		// 更新sequence_number
+		// ���� sequence_number
 		sequence_number++;
 	}
 
 	return num_fec_packets;
 }
 
-// 异或运算生成FEC数据
-void ForwardErrorCorrection::XorPayloads(uint16_t src_data_length,
-	const uint8_t* src,
-	uint16_t* dst_data_length,
-	uint8_t* dst,
-	size_t length) {
-	// 构建源头部缓冲区
-	uint8_t src_header[2];
-	src_header[0] = static_cast<uint8_t>(src_data_length >> 8);
-	src_header[1] = static_cast<uint8_t>(src_data_length & 0xFF);
-
-	// 构建目标头部缓冲区
-	uint8_t dst_header[2];
-	dst_header[0] = static_cast<uint8_t>((*dst_data_length) >> 8);
-	dst_header[1] = static_cast<uint8_t>((*dst_data_length) & 0xFF);
-
-	// 头部字段XOR
-	dst_header[0] ^= src_header[0];
-	dst_header[1] ^= src_header[1];
-
-	// 更新目标数据长度
-	*dst_data_length = (static_cast<uint16_t>(dst_header[0]) << 8) | static_cast<uint16_t>(dst_header[1]);
-
-	// 数据部分进行异或运算
+void ForwardErrorCorrection::XorPayloads(const uint8_t* src, uint8_t* dst, size_t length) {
 	size_t i = 0;
 
-	// 使用AVX2指令集进行256位（32字节）XOR操作
+	// ʹ�� AVX2 ָ����� 256 λ��32 �ֽڣ������ XOR ����
 	for (; i + 31 < length; i += 32) {
 		__m256i src_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
 		__m256i dst_vec = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
@@ -177,7 +152,7 @@ void ForwardErrorCorrection::XorPayloads(uint16_t src_data_length,
 		_mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), result_vec);
 	}
 
-	// 使用SSE2指令集进行128位（16字节）XOR操作
+	// ʹ�� SSE2 ָ����� 128 λ��16 �ֽڣ������ XOR ����
 	for (; i + 15 < length; i += 16) {
 		__m128i src_vec = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
 		__m128i dst_vec = _mm_loadu_si128(reinterpret_cast<__m128i*>(dst + i));
@@ -185,7 +160,7 @@ void ForwardErrorCorrection::XorPayloads(uint16_t src_data_length,
 		_mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), result_vec);
 	}
 
-	// 处理剩余字节（不足16字节）
+	// ����ʣ����ֽڣ����� 16 �ֽڵĲ��֣�
 	for (; i < length; ++i) {
 		dst[i] ^= src[i];
 	}
@@ -199,7 +174,7 @@ size_t PacketMaskSize(size_t num_sequence_numbers) {
 	return kUlpfecPacketMaskSizeLBitClear;
 }
 
-
+// ?????????
 void GeneratePacketMasks(int num_media_packets,
 	int num_fec_packets,
 	int num_imp_packets,
@@ -212,14 +187,18 @@ void GeneratePacketMasks(int num_media_packets,
 	RTC_DCHECK_LE(num_imp_packets, num_media_packets);
 	RTC_DCHECK_GE(num_imp_packets, 0);
 
-	const int num_mask_bytes = PacketMaskSize(num_media_packets); 
+	const int num_mask_bytes = PacketMaskSize(num_media_packets); // ???????????????????
 
+	// ???????????????
 	if (!use_unequal_protection || num_imp_packets == 0) {
+		// ??????????��????????????????????????
+		// ???? = (k, n-k)?????????? = (n-k)/k??
+		// ???? k = ??????????n = ???????(n-k) = FEC????????
 		rtc::ArrayView<const uint8_t> mask =
 			mask_table->LookUp(num_media_packets, num_fec_packets);
 		memcpy(packet_mask, &mask[0], mask.size());
 	}
-}  
+}  // ???? GetPacketMasks
 
 rtc::ArrayView<const uint8_t> PacketMaskTable::LookUp(int num_media_packets,
 	int num_fec_packets) {
@@ -227,15 +206,24 @@ rtc::ArrayView<const uint8_t> PacketMaskTable::LookUp(int num_media_packets,
 	RTC_DCHECK_GT(num_fec_packets, 0);
 	RTC_DCHECK_LE(num_media_packets, kUlpfecMaxMediaPackets);
 	RTC_DCHECK_LE(num_fec_packets, num_media_packets);
-
+	// ???????????��?????12????????????FEC???��???????
 	if (num_media_packets <= 12) {
 		return LookUpInFecTable(table_, num_media_packets - 1, num_fec_packets - 1);
 	}
-
+	// ??????????
 	int mask_length =
 		static_cast<int>(PacketMaskSize(static_cast<size_t>(num_media_packets)));
 
+	// ????FEC???????????????????
+	// ???????��????FEC?????��????��/?��????????????
+	// ???��?????A????/��B???????1?????FEC??A??????????B??
+
+	// ???????FEC????
 	for (int row = 0; row < num_fec_packets; row++) {
+		// ?????????��?????????????8��??
+		// ???????X?????FEC??????????��X?????1??
+		// ???????��????????????????????X????FEC??(X % N)??????
+		// ??????????????????????????????????????
 		for (int col = 0; col < mask_length; col++) {
 			fec_packet_mask_[row * mask_length + col] =
 				((col * 8) % num_fec_packets == row && (col * 8) < num_media_packets
@@ -312,27 +300,34 @@ rtc::ArrayView<const uint8_t> LookUpInFecTable(const uint8_t* table,
 	return { &entry[0], size };
 }
 
-// bitrate等于0时表示不限制发送速率
 void ForwardErrorCorrection::SendByUlpfec(SOCKET so, const char* buf, int len, int flags, const sockaddr* to, int tolen, int k, int r, int bitrate, double packet_loss_rate) {
 	int ret = -1;
 	// 邢启航09_06添加内容：随机丢包模拟
-	static auto seed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-	static std::mt19937 gen(seed);  // 用时间种子初始化
+	static std::random_device rd;
+	static std::mt19937 gen(rd());
 	static std::uniform_real_distribution<> dis(0.0, 1.0);
 
-	// 更新packet_size（只在数据长度变大时更新）
-	if (len > packet_size) {
+	// 若为第一次调用，先记录一下包的大小信息，以便最后一包进行填充
+	if (fec_first_use) {
 		packet_size = len;
+		fec_first_use = false;
 	}
 
-	// 存储当前数据包
+	// 判断len长度是否符合要求
+	if (len < packet_size) {
+		memset(const_cast<char*>(buf) + len, 0, packet_size - len);
+		// 默认最后一包数据长度不足
+		fec_last_use = true;
+	}
+
+	// 获取当前 Packet 对象
 	auto& packet = media_packets[current_packet_index_];
-	packet->packet_mask = 0; // 数据包的包掩码为0
+	packet->packet_mask = 0; // ???????????????????0
 	packet->group_number = group_number;
 	packet->sequence_number = sequence_number;
 	packet->k = k;
-	packet->data_length = htons(static_cast<uint16_t>(len));
-	memcpy(packet->data, buf, len);
+	packet->r = r;
+	memcpy(packet->data, buf, packet_size);
 	// 更新sequence_number
 	sequence_number++;
 
@@ -340,54 +335,34 @@ void ForwardErrorCorrection::SendByUlpfec(SOCKET so, const char* buf, int len, i
 	current_packet_index_ = (current_packet_index_ + 1) % k;
 
 	// 发送数据包
-	// 情况1：bitrate == 0 时，不限制发送速率，直接发送
-	if (bitrate == 0) {
-		double rand_val = dis(gen);
-		if (rand_val >= packet_loss_rate) {
-			if ((ret = sendto(so, reinterpret_cast<const char*>(&packet->packet_mask), len + fec_head_size, 0, to, tolen)) == SOCKET_ERROR) {
-				OF_PRINT_ERROR(("sendto() failed!\n"))
-					ret = -1;
-				return;
-			}
-#if print_message
-			printf("sending SRC symbol: group_number=%u, sequence_number=%u, data_length=%u\n", packet->group_number, packet->sequence_number, ntohs(packet->data_length));
-#endif
+	auto start = std::chrono::high_resolution_clock::now(); //记录当前时间
+	double rand_val = dis(gen);
+	if (rand_val >= packet_loss_rate) {
+		if ((ret = sendto(so, reinterpret_cast<const char*>(&packet->packet_mask), packet_size + 6, 0, to, tolen)) == SOCKET_ERROR) {
+			OF_PRINT_ERROR(("sendto() failed!\n"))
+				ret = -1;
+			return;
 		}
-		else {
-#if print_message
-			printf("SRC symbol dropped (simulated loss): group_number=%u, sequence_number=%u, data_length=%u\n", packet->group_number, packet->sequence_number, ntohs(packet->data_length));
-#endif
-		}
+
+		// 发送成功，更新发送计数
+		total_sent_packets++;
+		total_sent_src_packets++;
+		printf("sending SRC symbol: group_number=%u, sequence_number=%u, packet_size=%u\n", packet->group_number, packet->sequence_number, packet_size);
 	}
 	else {
-		// 情况2：bitrate > 0 时，计算发送时间间隔
-		auto start = std::chrono::high_resolution_clock::now(); //记录当前时间
-		double rand_val = dis(gen);
-		if (rand_val >= packet_loss_rate) {
-			if ((ret = sendto(so, reinterpret_cast<const char*>(&packet->packet_mask), len + fec_head_size, 0, to, tolen)) == SOCKET_ERROR) {
-				OF_PRINT_ERROR(("sendto() failed!\n"))
-					ret = -1;
-				return;
-			}
-#if print_message
-			printf("sending SRC symbol: group_number=%u, sequence_number=%u, data_length=%u\n", packet->group_number, packet->sequence_number, ntohs(packet->data_length));
-#endif
-		}
-		else {
-#if print_message
-			printf("SRC symbol dropped (simulated loss): group_number=%u, sequence_number=%u, data_length=%u\n", packet->group_number, packet->sequence_number, ntohs(packet->data_length));
-#endif
-		}
+		// 模拟丢包，直接跳过发送
+		total_lose_src_packets++;
+		printf("SRC symbol dropped (simulated loss): group_number=%u, sequence_number=%u, packet_size=%u\n", packet->group_number, packet->sequence_number, packet_size);
+	}
 
-		auto end = std::chrono::high_resolution_clock::now(); // 记录当前时间
-		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-		double timeTaken = duration.count() / 1000.0; // 实际时间
-		double desiredTime = (packet_size + 7) * 8 / static_cast<double>(bitrate); // 理想时间
+	auto end = std::chrono::high_resolution_clock::now(); //记录当前时间
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	double timeTaken = duration.count() / 1000.0; // 实际时间
+	double desiredTime = (packet_size + 6) * 8 / static_cast<double>(bitrate); // 理想时间
 
-		double sleepTime = desiredTime - timeTaken;
-		if (sleepTime > 0) {
-			std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleepTime));
-		}
+	double sleepTime = desiredTime - timeTaken;
+	if (sleepTime > 0) {
+		std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleepTime));
 	}
 
 	// 当数据包列表中有k个数据包时，执行一次编码函数
@@ -395,57 +370,36 @@ void ForwardErrorCorrection::SendByUlpfec(SOCKET so, const char* buf, int len, i
 		EncodeFec(media_packets, r, kNumImportantPackets, kUseUnequalProtection, fec_mask_type, fec_packets);
 
 		// 发送冗余包
-		for (const auto& fec_packet : fec_packets) {
-			// 情况1：bitrate == 0 时，不限制发送速率，直接发送
-			if (bitrate == 0) {
-				double rand_val_fec = dis(gen);
-				if (rand_val_fec >= packet_loss_rate) {
-					if ((ret = sendto(so, reinterpret_cast<const char*>(&fec_packet->packet_mask), packet_size + fec_head_size, 0, to, tolen)) == SOCKET_ERROR) {
-						OF_PRINT_ERROR(("sendto() failed!\n"))
-							ret = -1;
-						return;
-					}
-#if print_message
-					printf("sending FEC symbol: group_number=%u, sequence_number=%u, data_length=%u\n", fec_packet->group_number, fec_packet->sequence_number, packet_size);
-#endif
+		for(const auto& fec_packet : fec_packets){
+			auto start = std::chrono::high_resolution_clock::now(); //记录当前时间
+			double rand_val_fec = dis(gen);
+			if (rand_val_fec >= packet_loss_rate) {
+				if ((ret = sendto(so, reinterpret_cast<const char*>(&fec_packet->packet_mask), packet_size + 6, 0, to, tolen)) == SOCKET_ERROR) {
+					OF_PRINT_ERROR(("sendto() failed!\n"))
+						ret = -1;
+					return;
 				}
-				else {
-#if print_message
-					// 模拟丢包，直接跳过发送
-					printf("FEC symbol dropped (simulated loss): group_number=%u, sequence_number=%u, data_length=%u\n", fec_packet->group_number, fec_packet->sequence_number, packet_size);
-#endif
-				}
+				// 发送成功，更新发送计数
+				total_sent_packets++;
+				total_sent_fec_packets++;
+				printf("sending FEC symbol: group_number=%u, sequence_number=%u, packet_size=%u\n", fec_packet->group_number, fec_packet->sequence_number, packet_size);
 			}
 			else {
-				auto start = std::chrono::high_resolution_clock::now(); //记录当前时间
-				double rand_val_fec = dis(gen);
-				if (rand_val_fec >= packet_loss_rate) {
-					if ((ret = sendto(so, reinterpret_cast<const char*>(&fec_packet->packet_mask), packet_size + fec_head_size, 0, to, tolen)) == SOCKET_ERROR) {
-						OF_PRINT_ERROR(("sendto() failed!\n"))
-							ret = -1;
-						return;
-					}
-#if print_message
-					printf("sending FEC symbol: group_number=%u, sequence_number=%u, data_length=%u\n", fec_packet->group_number, fec_packet->sequence_number, packet_size);
-#endif
-				}
-				else {
-					// 模拟丢包，直接跳过发送
-#if print_message
-					printf("FEC symbol dropped (simulated loss): group_number=%u, sequence_number=%u, data_length=%u\n", fec_packet->group_number, fec_packet->sequence_number, packet_size);
-#endif
-				}
-				auto end = std::chrono::high_resolution_clock::now(); // 记录当前时间
-				auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-				double timeTaken = duration.count() / 1000.0; // 实际时间
-				double desiredTime = (packet_size + 7) * 8 / static_cast<double>(bitrate); // 理想时间
+				// 模拟丢包，直接跳过发送
+				printf("FEC symbol dropped (simulated loss): group_number=%u, sequence_number=%u, packet_size=%u\n", fec_packet->group_number, fec_packet->sequence_number, packet_size);
 
-				double sleepTime = desiredTime - timeTaken;
-				if (sleepTime > 0) {
-					std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleepTime));
-				}
+			}
+			auto end = std::chrono::high_resolution_clock::now(); //?????????
+			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+			double timeTaken = duration.count() / 1000.0; // ??????
+			double desiredTime = (packet_size + 6) * 8 / static_cast<double>(bitrate); // ???????
+
+			double sleepTime = desiredTime - timeTaken;
+			if (sleepTime > 0) {
+				std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleepTime));
 			}
 		}
+
 		// 更新group_number和sequence_number
 		group_number++;
 		sequence_number = 0;
@@ -457,37 +411,95 @@ void ForwardErrorCorrection::SendByUlpfec(SOCKET so, const char* buf, int len, i
 				fec_packet->group_number = 0;
 				fec_packet->sequence_number = 0;
 				fec_packet->k = 0;
-				fec_packet->data_length = 0;
+				fec_packet->r = 0;
 				memset(fec_packet->data, 0, ForwardErrorCorrection::Packet::kMaxDataSize);
 				fec_packet->ref_count_ = 0;
 			}
 		}
+		
+	}
+
+	// 最后一轮数据发送，打印信息
+	if (fec_last_use) {
+		printf("\ntotal_sent_packets=%u, total_sent_src_packets=%u, total_sent_fec_packets=%u\n", total_sent_packets, total_sent_src_packets, total_sent_fec_packets);
+
+		// 邢启航09_09添加内容：丢失数据包数量统计
+		printf("丢失数据包数量：%u\n", total_lose_src_packets);
+
+		media_packets.clear();
+		fec_packets.clear();
+	}
+}
+
+void ForwardErrorCorrection::Send_PacketByFEC(const char* buf, int len, int k, int r) {
+
+	// ???????��??????????��????��?????????????????????
+	if (fec_first_use) {
+		packet_size = len;
+		fec_first_use = false;
+	}
+
+	//?��?len?????????????
+	if (len < packet_size) {
+		memset(const_cast<char*>(buf) + len, 0, packet_size - len);
+		//???????????????????
+		fec_last_use = true;
+	}
+
+	// ???? ForwardErrorCorrection::Packet ??????????
+	auto packet = std::make_unique<ForwardErrorCorrection::Packet>();
+	packet->packet_mask = 0; // ???????????????????0
+	packet->group_number = group_number;
+	packet->sequence_number = sequence_number;
+	packet->k = k;
+	packet->r = r;
+	memcpy(packet->data, buf, packet_size);
+	// ????sequence_number
+	sequence_number++;
+
+	// ??????????????��???
+	media_packets.push_back(std::move(packet));
+	send_buffer_packets.push_back(std::make_unique<ForwardErrorCorrection::Packet>(*media_packets.back()));
+
+
+	// ????????��?????k???????????????��?????
+	if (media_packets.size() == k) {
+		EncodeFec(media_packets, r, kNumImportantPackets, kUseUnequalProtection, fec_mask_type, fec_packets);
+
+		// ?? fec_packets ?��??��??????????? buffer_packets ?��???
+		for (auto& fec_packet : fec_packets) {
+			send_buffer_packets.push_back(std::make_unique<ForwardErrorCorrection::Packet>(*fec_packet));
+		}
+
+		// ????group_number??sequence_number
+		group_number++;
+		sequence_number = 0;
 	}
 }
 
 ForwardErrorCorrection::DecodeFecResult ForwardErrorCorrection::DecodeFec(
 	const ReceivedPacket& received_packet,
 	RecoveredPacketList* recovered_packets) {
-	// 确保传入的 recovered_packets 指针是有效的
+	// ???????? recovered_packets ???????��??
 	RTC_DCHECK(recovered_packets);
-	// 如果已恢复的包数量达到了最大值，检查是否需要重置 FEC 解码状态
+	// ????????????????????????????????????? FEC ??????
 	if (recovered_packets->size() == max_media_packets) {
-		// 获取最后一个已恢复的包
+		// ????????????????
 		const RecoveredPacket* back_recovered_packet = recovered_packets->back().get();
-		// 计算接收到的包和最后一个恢复的包之间的组号差异
+		// ???????????????????????????????????
 		const unsigned int seq_num_diff = MinDiff(received_packet.pkt->group_number, back_recovered_packet->pkt->group_number);
-		// 如果组号差异大于2，说明组号之间有很大的间隔
-		if (seq_num_diff > 2) {
-			// 在日志中记录这一信息，并重置 FEC 解码状态
+		// ????????????1????????????��?????
+		if (seq_num_diff > 1) {
+			// ??????��???????????????? FEC ??????
 			printf("Big gap in media/ULPFEC group numbers. No need to keep the old packets in the FEC buffers, thus resetting them.");
 			ResetState(recovered_packets);
 		}
 	}
-	// 插入数据，media包/FEC包
+	// ?????????media??/FEC??
 	InsertPacket(received_packet, recovered_packets);
 
 	DecodeFecResult decode_result;
-	// 尝试恢复包
+	// ????????
 	decode_result.num_recovered_packets = AttemptRecovery(recovered_packets);
 	return decode_result;
 }
@@ -495,43 +507,43 @@ ForwardErrorCorrection::DecodeFecResult ForwardErrorCorrection::DecodeFec(
 void ForwardErrorCorrection::InsertPacket(
 	const ReceivedPacket& received_packet,
 	RecoveredPacketList* recovered_packets) {
-    // **第一部分：丢弃旧的FEC包**
-    // 如果`received_fec_packets_`（已接收的FEC包列表）不为空
-    // 则检查是否需要丢弃旧的FEC包。
+	// **???????????????FEC??**
+	// ???`received_fec_packets_`????????FEC???��????????
+	// ?????????????????FEC????
 	if (!received_fec_packets_.empty()) {
-        // 遍历`received_fec_packets_`列表，逐个检查FEC包的序列号是否过旧。
+		// ????`received_fec_packets_`?��?????????FEC???????��??????��?
 		auto it = received_fec_packets_.begin();
 		while (it != received_fec_packets_.end()) {
-			// 计算当前接收到的包与FEC包之间的组号差异
+			// ???????????????FEC????????????
 			uint16_t group_num_diff = MinDiff(received_packet.pkt->group_number, (*it)->pkt->group_number);
-            // 如果组号差异大于2，说明该FEC包过旧，
-            // 不再可能用于恢复任何丢失的媒体包，因此将其从列表中移除。
-			if (group_num_diff > 2) {
-				it = received_fec_packets_.erase(it); // 从列表中删除旧的FEC包
+			// ????????????1???????FEC???????
+			// ??????????????�ʦ�??????????????????��????????
+			if (group_num_diff > 1) {
+				it = received_fec_packets_.erase(it); // ???��?????????FEC??
 			}
 			else {
-                // 由于`received_fec_packets_`列表是按顺序排序的，
-                // 如果当前包的序列号差异不超过阈值，则后续包也一定满足条件。
-                // 因此可以直接退出循环，避免不必要的迭代。
+				// ????`received_fec_packets_`?��?????????????
+				// ?????????????��??????????????????????????????????
+				// ???????????????????????????????
 				break;
 			}
 		}
 	}
 
-    // **第二部分：根据包的类型（FEC包或媒体包）进行不同处理**
+	// **????????????????????FEC?????????????��??????**
 	if (received_packet.pkt->sequence_number > (received_packet.pkt->k - 1)) {
-        // 处理接收到的FEC包，通过解析包掩码来确定哪些媒体数据包被保护，并尝试使用FEC包来恢复任何丢失的媒体数据包。
-        // 同时，它负责维护一个有序的FEC包列表，确保处理效率和资源使用的平衡。
+		//???????????FEC????????????????????????��?????????????????????????FEC????????�ʦ�??????????????
+		//?????????????????????FEC???��??????????��?????????????
 		InsertFecPacket(*recovered_packets, received_packet);
 	}
 	else {
-        // 处理接收到的媒体数据包，并将其插入到恢复包列表中
+		//????????????????????????????????????��???
 		InsertMediaPacket(recovered_packets, received_packet);
 	}
 
-    // **第三部分：丢弃旧的恢复包**
-    // 调用`DiscardOldRecoveredPackets`函数，清理恢复包列表中过旧的包。
-    // 这可以防止恢复包列表无限增长，节省内存，同时确保只保留有用的包。
+	// **????????????????????**
+	// ????`DiscardOldRecoveredPackets`????????????????��??��???????
+	// ?????????????��????????????????��??????????????????
 	DiscardOldRecoveredPackets(recovered_packets);
 }
 
@@ -539,48 +551,48 @@ void ForwardErrorCorrection::InsertFecPacket(
 	const RecoveredPacketList& recovered_packets,
 	const ReceivedPacket& received_packet) {
 
-    // 检查重复的FEC包。
+	// ????????FEC????
 	for (const auto& existing_fec_packet : received_fec_packets_) {
 		if (existing_fec_packet->pkt->sequence_number == received_packet.pkt->sequence_number &&
 			existing_fec_packet->pkt->group_number == received_packet.pkt->group_number) {
-			return; // 丢弃重复的FEC包数据。
+			return; // ?????????FEC???????
 		}
 	}
-    // 创建一个新的ReceivedFecPacket对象来存储接收到的FEC包信息。
+	// ??????????ReceivedFecPacket???????��???????FEC???????
 	std::unique_ptr<ReceivedFecPacket> fec_packet(new ReceivedFecPacket());
 	fec_packet->group_number = received_packet.group_number;
 	fec_packet->sequence_number = received_packet.sequence_number;
 	fec_packet->pkt = received_packet.pkt;
 
-    // 定义一个 uint16_t 类型的 packet_mask 变量，并将 fec_packet->pkt->packet_mask 赋给该变量
+	// ??????? uint16_t ????? packet_mask ?????????? fec_packet->pkt->packet_mask ?????????
 	uint16_t packet_mask = fec_packet->pkt->packet_mask;
-    // 遍历 packet_mask 的每个位，检查哪些媒体包被保护
+	// ???? packet_mask ?????��???????��??????????
 	for (uint16_t bit_idx = 0; bit_idx < 16; ++bit_idx) {
 		if (packet_mask & (1 << (15 - bit_idx))) {
 			std::unique_ptr<ProtectedPacket> protected_packet(new ProtectedPacket());
-            // 计算受保护的包的组号和序列号
+			// ?????????????????????��?
 			protected_packet->group_number = fec_packet->group_number;
 			protected_packet->sequence_number = bit_idx;
-            // 初始化时不关联具体数据包
+			// ?????????????????????
 			protected_packet->pkt = nullptr;
 			fec_packet->protected_packets.push_back(std::move(protected_packet));
 		}
 	}
 
-    // 如果FEC包的包掩码全为零，说明这个FEC包无法保护任何媒体包，可以直接丢弃。
+	// ???FEC???????????????????FEC??????????��???????????????????
 	if (fec_packet->protected_packets.empty()) {
 		printf("Received FEC packet has an all-zero packet mask.");
 	}
 	else {
-        // 将FEC包中受保护的媒体包列表（protected_packets）与已经恢复的媒体包列表（recovered_packets）进行比较，
-        // 找到两者的交集（即FEC包保护的媒体包中哪些已经被恢复）。
-        // 对于这些已经恢复的媒体包，函数会更新FEC包中对应受保护包的指针，使其指向实际的媒体包数据。
+		// ??FEC????????????????��???protected_packets?????????????????��???recovered_packets?????��???
+		// ???????????????FEC????????????????��????????????
+		// ??????��???????????????????????FEC???��?????????????????????????????????
 		AssignRecoveredPackets(recovered_packets, fec_packet.get());
-        // 将新的FEC包添加到已接收的FEC包列表中，并按序列号排序。
+		// ?????FEC?????????????FEC???��??��????????��?????
 		received_fec_packets_.push_back(std::move(fec_packet));
 		received_fec_packets_.sort(SortablePacket::LessThan());
 
-        // 如果列表过大，则移除最旧的FEC包。
+		// ????��??????????????FEC????
 		if (received_fec_packets_.size() > max_fec_packets) {
 			received_fec_packets_.pop_front();
 		}
@@ -591,85 +603,86 @@ void ForwardErrorCorrection::InsertFecPacket(
 void ForwardErrorCorrection::InsertMediaPacket(
 	RecoveredPacketList* recovered_packets,
 	const ReceivedPacket& received_packet) {
-	// 在已恢复的包列表中搜索重复的包。
+	// ??????????��???????????????
 	for (const auto& recovered_packet : *recovered_packets) {
 		if (recovered_packet->pkt->sequence_number == received_packet.pkt->sequence_number &&
 			recovered_packet->pkt->group_number == received_packet.pkt->group_number) {
-			return; // 重复的包，不需要添加到列表中。
+			return; // ???????????????????��??��?
 		}
 	}
 
-	// 创建一个新的RecoveredPacket对象来存储接收到的媒体包信息。
+	// ??????????RecoveredPacket???????��????????????????
 	std::unique_ptr<RecoveredPacket> recovered_packet(new RecoveredPacket());
 	recovered_packet->group_number = received_packet.group_number;
 	recovered_packet->sequence_number = received_packet.sequence_number;
 	recovered_packet->pkt = received_packet.pkt;
 
-	// TODO: 考虑使用二分搜索找到正确的位置插入新包，以避免排序。
+	// TODO: ??????????????????????��?��????��????????????
 	RecoveredPacket* recovered_packet_ptr = recovered_packet.get();
 
-	// 将新恢复的包添加到已恢复的包列表中。
+	// ??????????????????????��??��?
 	recovered_packets->push_back(std::move(recovered_packet));
 
-	// 对已恢复的包列表进行排序，以确保它们按序列号顺序排列。
+	// ??????????��??????????????????????��???????��?
 	recovered_packets->sort(SortablePacket::LessThan());
 
-	// 更新覆盖FEC包的信息，根据新加入的媒体包调整。
+	// ???????FEC?????????????????????????????
 	UpdateCoveringFecPackets(*recovered_packet_ptr);
 }
 
-//解码恢复丢失的包，每次恢复一个，恢复一个即删除掉该FEC，再从头开始，直至所有包都恢复，和我们学过的高斯消元法比较类似
+//????????????????��??????????????????????FEC?????????????????��?????????????????????????????????
 size_t ForwardErrorCorrection::AttemptRecovery(
 	RecoveredPacketList* recovered_packets) {
-	size_t num_recovered_packets = 0; // 记录成功恢复的包数量
-	// 创建一个迭代器，用于遍历接收到的 FEC 包
+	size_t num_recovered_packets = 0; // ????????????????
+	// ????????????????????????????? FEC ??
 	auto fec_packet_it = received_fec_packets_.begin();
-	// 遍历所有接收到的 FEC 包
+	// ???????��?????? FEC ??
 	while (fec_packet_it != received_fec_packets_.end()) {
-		// 通过当前 FEC 包计算缺失的媒体包数量
+		// ?????? FEC ??????????????????
 		int packets_missing = NumCoveredPacketsMissing(**fec_packet_it);
 
-		// 一次只能恢复一个媒体包，如果缺失的包超过两个，先判断其他的 FEC 包
+		// ??????????????????????????????????????��??????? FEC ??
 		if (packets_missing == 1) {
-			// 可以恢复一个包
+			// ???????????
 			std::unique_ptr<RecoveredPacket> recovered_packet(new RecoveredPacket());
-			recovered_packet->pkt = nullptr; // 初始化恢复包的指针
-			// 尝试恢复包，恢复过程是对 FEC 编码的逆运算
+			recovered_packet->pkt = nullptr; // ???????????????
+			// ???????????????????? FEC ???????????
+			// ?????? RTP ???��?????��???��???????????
 			if (!RecoverPacket(**fec_packet_it, recovered_packet.get())) {
-				// 如果无法恢复该包，则丢弃当前 FEC 包
+				// ????????????????????? FEC ??
 				fec_packet_it = received_fec_packets_.erase(fec_packet_it);
-				continue; // 继续下一个 FEC 包的处理
+				continue; // ????????? FEC ???????
 			}
 
-			++num_recovered_packets; // 成功恢复一个包，计数加一
+			++num_recovered_packets; // ????????????????????
 
 			auto* recovered_packet_ptr = recovered_packet.get();
-            // 将恢复的包添加到恢复包列表中，并更新覆盖该包的 FEC 包指针
-            // TODO: 考虑使用二分搜索来找到插入位置，以提高效率
+			// ???????????????????��??��?????????????? FEC ?????
+			// TODO: ???????????????????????��????????��??
 			recovered_packets->push_back(std::move(recovered_packet));
-			recovered_packets->sort(SortablePacket::LessThan()); // 对恢复包进行排序
-			// 更新所有覆盖该媒体包的 FEC 包的状态
+			recovered_packets->sort(SortablePacket::LessThan()); // ??????????????
+			// ???????��?????????? FEC ??????
 			UpdateCoveringFecPackets(*recovered_packet_ptr);
-			// 丢弃旧的已恢复包，保持列表的整洁
+			// ????????????????????��???????
 			DiscardOldRecoveredPackets(recovered_packets);
-			// 删除当前处理的 FEC 包，因为它已经被处理
+			// ???????????? FEC ??????????????????
 			fec_packet_it = received_fec_packets_.erase(fec_packet_it);
 
-            // 一旦恢复了一个包，检查是否可以恢复其他包
-            // 由于丢失的包数量现在可能减少，因此重新开始处理 FEC 包
+			// ????????????????????????????????
+			// ????????????????????????????????????? FEC ??
 			fec_packet_it = received_fec_packets_.begin();
 		}
 		else if (packets_missing == 0) {
-			// 如果当前 FEC 包下所有媒体包都已收到或恢复，则删除该 FEC 包
+			// ?????? FEC ???????????????????????????????? FEC ??
 			fec_packet_it = received_fec_packets_.erase(fec_packet_it);
 		}
 		else {
-			// 如果丢失的包超过一个，则暂时无法恢复，继续处理下一个 FEC 包
+			// ???????????????????????????????????????????? FEC ??
 			fec_packet_it++;
 		}
 	}
 
-	return num_recovered_packets; // 返回成功恢复的包数量
+	return num_recovered_packets; // ????????????????
 }
 
 int ForwardErrorCorrection::NumCoveredPacketsMissing(
@@ -732,31 +745,33 @@ void ForwardErrorCorrection::UpdateCoveringFecPackets(
 
 bool ForwardErrorCorrection::RecoverPacket(const ReceivedFecPacket& fec_packet,
 	RecoveredPacket* recovered_packet) {
-	//初始化恢复包的pkt对象
+	//????????????pkt????
 	recovered_packet->pkt = new Packet();
 	memcpy(recovered_packet->pkt->data, fec_packet.pkt->data, packet_size);
-	recovered_packet->pkt->data_length = fec_packet.pkt->data_length;
 
-	// 遍历FEC包中保护的所有媒体包。
+	// ????FEC???��???????????????
 	for (const auto& protected_packet : fec_packet.protected_packets) {
 		if (protected_packet->pkt == nullptr) {
-            // 如果protected_packet的pkt指针为nullptr，说明这就是我们要恢复的包。
-            // 设置恢复包的组号和序列号为当前受保护包的组号和序列号。
+			// ???protected_packet??pkt????nullptr???????????????????????
+			// ?????????????????��?????????????????????��??
 			recovered_packet->group_number = protected_packet->group_number;
 			recovered_packet->sequence_number = protected_packet->sequence_number;
-			recovered_packet->pkt->packet_mask = 0; // 恢复包的包掩码初始化为0
-			recovered_packet->pkt->group_number = protected_packet->group_number;
-			recovered_packet->pkt->sequence_number = protected_packet->sequence_number;
+
+			// ?????????????
+			recovered_packet->pkt->packet_mask = 0; // ??????????0
+			recovered_packet->pkt->group_number = recovered_packet->group_number;
+			recovered_packet->pkt->sequence_number = recovered_packet->sequence_number;
 			recovered_packet->pkt->k = fec_packet.pkt->k;
+			recovered_packet->pkt->r = fec_packet.pkt->r;
 		}
 		else {
-            // 如果protected_packet的pkt指针不为nullptr，说明这个包已经被接收，
-            // 我们使用它来通过异或操作恢复丢失的包。
-			XorPayloads(protected_packet->pkt->data_length, protected_packet->pkt->data, &(recovered_packet->pkt->data_length), recovered_packet->pkt->data, packet_size);
+			// ???protected_packet??pkt????nullptr????????????????????
+			// ???????????????????????????????
+			XorPayloads(protected_packet->pkt->data, recovered_packet->pkt->data, packet_size);
 		}
 	}
 
-    // 如果上述步骤都成功，则返回true，表示包恢复成功。
+	// ??????????��????????true???????????????
 	return true;
 }
 
@@ -768,21 +783,22 @@ bool ForwardErrorCorrection::SortablePacket::LessThan::operator()(
 }
 
 bool ForwardErrorCorrection::IsNewerSequenceNumber(uint8_t group_num1, uint8_t seq_num1, uint8_t group_num2, uint8_t seq_num2) {
-	// 首先比较 group_number
+	// ?????? group_number
 	if (group_num1 != group_num2) {
-		// 如果 group_num1 比 group_num2 大且差值小于16，或者 group_num1 比 group_num2 小且差值大于16，则 group_num1 更新
+		// ??? group_num1 ?? group_num2 ??????��??128?????? group_num1 ?? group_num2 ��????????128???? group_num1 ????
 		return (static_cast<uint8_t>(group_num1 - group_num2) < 128);
 	}
-	// 如果 group_number 相同，则比较 sequence_number
+	// ??? group_number ????????? sequence_number
 	return seq_num1 > seq_num2;
 }
 
 void ForwardErrorCorrection::DiscardOldRecoveredPackets(
 	RecoveredPacketList* recovered_packets) {
-	// 将超出 max_media_packets 数量的恢复包移动到 buffer_packets 列表中以供重用
 	while (recovered_packets->size() > max_media_packets) {
+		//????????��????????????????��?
 		auto& buffer_packet = recovered_packets->front();
 		buffer_packets.push_back(std::move(buffer_packet));
+		//???????????��????????
 		recovered_packets->pop_front();
 	}
 	RTC_DCHECK_LE(recovered_packets->size(), max_media_packets);
@@ -790,10 +806,10 @@ void ForwardErrorCorrection::DiscardOldRecoveredPackets(
 
 void ForwardErrorCorrection::ResetState(
 	RecoveredPacketList* recovered_packets) {
-	// Move all recovered packets to buffer_packets for reuse.
 	for (const auto& recovered_packet : *recovered_packets) {
 		auto buffer_packet = std::make_unique<ForwardErrorCorrection::RecoveredPacket>();
 		buffer_packet->pkt = recovered_packet->pkt;
+		//?????????��?
 		buffer_packets.push_back(std::move(buffer_packet));
 	}
 	// Free the memory for any existing recovered packets, if the caller hasn't.
@@ -801,18 +817,43 @@ void ForwardErrorCorrection::ResetState(
 	received_fec_packets_.clear();
 }
 
-// recvfrom_fec
+// ??��?????????
 int ForwardErrorCorrection::RecvByUlpfec(SOCKET so, char* buf, int len, int flags, sockaddr* from, int* fromlen) {
 	static int ret;
 	static int expected_packet_size;
 	void* pkt_with_fpi = NULL;
 
-	// buffer_packets为空时，才接收新包并进行FEC解码
+	// ???????��????????????��?????????
+	if (receive_first_use) {
+		// ?????????????
+		SOCKADDR_IN localAddr;
+#if defined(WEBRTC_WIN)	
+		int addrLen = sizeof(localAddr);
+#elif defined(WEBRTC_POSIX)
+		socklen_t addrLen = sizeof(localAddr);
+#endif
+		if (getsockname(so, (SOCKADDR*)&localAddr, &addrLen) == 0)
+		{
+			char* ipAddr = inet_ntoa(localAddr.sin_addr);
+			if (ipAddr != NULL)
+			{
+				printf("\nReceiving packets from %s/%d\n", ipAddr, ntohs(localAddr.sin_port));
+			}
+			else
+			{
+				printf("\nFailed to get local address and port\n");
+			}
+		}
+
+		receive_first_use = false;
+	}
+
+	// ???????????fec??
 	while (buffer_packets.empty()) {
-		expected_packet_size = 2000;
-		ret = get_next_pkt(so, &pkt_with_fpi, &expected_packet_size); // 这里有recvfrom操作
+		expected_packet_size = 2000; 
+		ret = get_next_pkt(so, &pkt_with_fpi, &expected_packet_size); // ���հ�
 		if (ret == OF_STATUS_OK) {
-			// 正确接收到一个包
+			// ????????????
 			auto received_packet = std::make_unique<ForwardErrorCorrection::ReceivedPacket>();
 			received_packet->pkt = rtc::scoped_refptr<ForwardErrorCorrection::Packet>(new ForwardErrorCorrection::Packet());
 			uint8_t* data_ptr = static_cast<uint8_t*>(pkt_with_fpi);
@@ -820,10 +861,9 @@ int ForwardErrorCorrection::RecvByUlpfec(SOCKET so, char* buf, int len, int flag
 			received_packet->pkt->group_number = data_ptr[2];
 			received_packet->pkt->sequence_number = data_ptr[3];
 			received_packet->pkt->k = data_ptr[4];
-			received_packet->pkt->data_length = (data_ptr[5] << 8) | data_ptr[6];
-			memcpy(received_packet->pkt->data, data_ptr + fec_head_size, expected_packet_size - fec_head_size); // 拷贝数据部分
-
-			// received_packet->group_number和sequence_number用于排序
+			received_packet->pkt->r = data_ptr[5];
+			memcpy(received_packet->pkt->data, data_ptr + 6, expected_packet_size - 6);
+			// ????group_number??sequence_number?????????lessthan???????��??
 			received_packet->group_number = received_packet->pkt->group_number;
 			received_packet->sequence_number = received_packet->pkt->sequence_number;
 
@@ -831,36 +871,137 @@ int ForwardErrorCorrection::RecvByUlpfec(SOCKET so, char* buf, int len, int flag
 			free(pkt_with_fpi);
 			pkt_with_fpi = NULL;
 
-			// 记录最长数据字段长度
-			if ((expected_packet_size - fec_head_size) > packet_size) {
-				packet_size = expected_packet_size - fec_head_size;
+			// ?????????????��???????
+			if (first_packet) {
+				packet_size = expected_packet_size - 6;
+				first_packet = false;
 			}
 
-			// 执行FEC解码
+			// ???????????????????
+			if (received_packet->pkt->sequence_number > (received_packet->pkt->k - 1)) {
+				total_received_fec_packets++;
+			}
+			else {
+				total_received_src_packets++;
+			}
+			total_received_packets++;
+
+			// ???????????��??????
 			auto decode_result = DecodeFec(*received_packet, &recovered_packets);
 		}
+		// else if (ret == OF_STATUS_FAILURE) {
+		// 	// ????????????????
+		// 	// ????????��??��??????????????��???
+		// 	for (const auto& recovered_packet : recovered_packets) {
+		// 		auto buffer_packet = std::make_unique<ForwardErrorCorrection::RecoveredPacket>();
+		// 		buffer_packet->pkt = recovered_packet->pkt;
+		// 		//?????????��?
+		// 		buffer_packets.push_back(std::move(buffer_packet));
+		// 	}
+		// 	// ??????????��?
+		// 	recovered_packets.clear();
+		// 	break;
+		// }
 		else if (ret == OF_STATUS_ERROR) {
-			// 接收出错，直接返回0表示无数据
+			// ??????????????
 			return 0;
 		}
 	}
 
-	// 从buffer_packets中取出一个已恢复的包返回给上层应用
+	// ??buffer_packets???��??????????????????????
 	if (!buffer_packets.empty()) {
-		// 取出第一个包
+		// ??? buffer_packets ?��??��???????
 		auto& buffer_packet = buffer_packets.front();
-#if print_message
-		printf("received SRC symbol: group_number=%u, sequence_number=%u, data_length=%u\n", buffer_packet->pkt->group_number, buffer_packet->pkt->sequence_number, buffer_packet->pkt->data_length);
-#endif
-		// 拷贝数据给上层应用
-		memcpy(buf, buffer_packet->pkt->data, buffer_packet->pkt->data_length);
-		len = buffer_packet->pkt->data_length;
+
+		// ????????
+		printf("received SRC symbol: group_number=%u, sequence_number=%u, packet_size=%u\n", buffer_packet->pkt->group_number, buffer_packet->pkt->sequence_number, packet_size);
+		total_src_packets_by_recovered++;
+
+		// ????????????
+		videoStruct* video = reinterpret_cast<videoStruct*>(buffer_packet->pkt->data);
+		len = sizeof(video->sysWord) + sizeof(video->idWord) + sizeof(video->nowTime) +
+			sizeof(video->versionNumber) + sizeof(video->totalChannel) + sizeof(video->whichChannel) +
+			sizeof(video->videoFormat) + sizeof(video->packetSize) + video->packetSize;
+		// ???????????????????????
+		memcpy(buf, video, len);
+		// ?????????????��???????????????????
+		if (len < packet_size) {
+			printf("\ntotal_received_packets: %d , total_received_src_packets: %d , total_received_fec_packets: %d .\n", total_received_packets, total_received_src_packets, total_received_fec_packets);
+			printf("\ntotal_src_packets_by_recovered: %d .\n", total_src_packets_by_recovered);
+			printf("\n???? %d ????????????????.\n", total_src_packets_by_recovered - total_received_src_packets);
+		}
+		// ????????��??????
 		buffer_packets.pop_front();
 	}
 	else {
-		// 正常情况下不会走到这里
+		// ????????????????��????????????????
 		len = 0;
 	}
 
 	return len;
+}
+
+int ForwardErrorCorrection::Recv_PacketByFEC(const char* buf, int len) {
+	auto received_packet = std::make_unique<ForwardErrorCorrection::ReceivedPacket>();
+	received_packet->pkt = rtc::scoped_refptr<ForwardErrorCorrection::Packet>(new ForwardErrorCorrection::Packet());
+	uint8_t* data_ptr = const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(buf));
+	received_packet->pkt->packet_mask = (data_ptr[0] << 8) | data_ptr[1];
+	received_packet->pkt->group_number = data_ptr[2];
+	received_packet->pkt->sequence_number = data_ptr[3];
+	received_packet->pkt->k = data_ptr[4];
+	received_packet->pkt->r = data_ptr[5];
+	memcpy(received_packet->pkt->data, data_ptr + 6, len - 6);
+	// ????group_number??sequence_number?????????lessthan???????��??
+	received_packet->group_number = received_packet->pkt->group_number;
+	received_packet->sequence_number = received_packet->pkt->sequence_number;
+
+	// ?????????????��???????
+	if (first_packet) {
+		packet_size = len - 6;
+		first_packet = false;
+	}
+
+	// ???????????��??????
+	auto decode_result = DecodeFec(*received_packet, &recovered_packets);
+
+	// ?��????????????????????????????????��??��??????????????��???
+	if (!recovered_packets.empty()) {
+		auto& last_packet = recovered_packets.back();
+		// ????????????
+		videoStruct* video = reinterpret_cast<videoStruct*>(last_packet->pkt->data);
+		packet_len = sizeof(video->sysWord) + sizeof(video->idWord) + sizeof(video->nowTime) +
+			sizeof(video->versionNumber) + sizeof(video->totalChannel) + sizeof(video->whichChannel) +
+			sizeof(video->videoFormat) + sizeof(video->packetSize) + video->packetSize;
+
+		// ?????????????��??????????
+		if (packet_len < packet_size) {
+			for (const auto& recovered_packet : recovered_packets) {
+				auto buffer_packet = std::make_unique<ForwardErrorCorrection::RecoveredPacket>();
+				buffer_packet->pkt = recovered_packet->pkt;
+				//?????????��?
+				buffer_packets.push_back(std::move(buffer_packet));
+			}
+			// ??????????��?
+			recovered_packets.clear();
+		}
+	}
+
+	// ?��?buffer_packets?��???????
+	if (!buffer_packets.empty()) {
+		// ???? buffer_packets ?��?????????? buffer_packet ?? pkt->data ??��????
+		for (const auto& buffer_packet : buffer_packets) {
+			std::vector<uint8_t> data(buffer_packet->pkt->data, buffer_packet->pkt->data + packet_size);
+			recv_data_list.push_back(data);
+		}
+
+		// ??? buffer_packets ?��?
+		buffer_packets.clear();
+
+		// ????recv_data_list?��????��?????????????????????
+		return recv_data_list.size();
+	}
+	else {
+		// buffer_packets ?��??????????��????????????????
+		return 0;
+	}
 }

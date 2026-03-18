@@ -12,6 +12,7 @@
 #include "modules/rtp_rtcp/source/fec_private_tables_random.h"
 #include "udp_with_ulpfec.h"
 
+// �޸ĺ�ķ��ͺ���
 void sendto_fec(SOCKET so, const char* buf, int len, int flags, const sockaddr* to, int tolen, int k, int r, int bitrate, double packet_loss_rate) {
 	static ForwardErrorCorrection fec_instance;
 	static bool is_initialized = false; // 静态变量，用于跟踪是否已初始化
@@ -26,12 +27,12 @@ void sendto_fec(SOCKET so, const char* buf, int len, int flags, const sockaddr* 
 	fec_instance.SendByUlpfec(so, buf, len, flags, to, tolen, k, r, bitrate, packet_loss_rate);
 }
 
+// �޸ĺ�Ľ��պ���
 int recvfrom_fec(SOCKET so, char* buf, int len, int flags, sockaddr* from, int* fromlen) {
 	int ret;
 	static ForwardErrorCorrection fec_decoder;
 	ret = fec_decoder.RecvByUlpfec(so, buf, len, flags, from, fromlen);
 	return ret;
 }
-
 
 

@@ -243,5 +243,3 @@ RTC_NORETURN void rtc_FatalMessage(const char* file,
     rtc::webrtc_checks_impl::FatalLog(file, line);
 #endif
 }
-
-

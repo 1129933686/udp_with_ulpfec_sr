@@ -96,6 +96,22 @@
 #define DEST_IP		"127.0.0.1"	/* Destination IPv4 address */
 #define DEST_PORT   10978     /* Destination port (UDP) */
 
+#pragma pack(1) // �ṹ�������֮����ܴ洢�������ж�����䣺�ṹ����������ԱӦ�ð���1�ֽڶ��뷽ʽ��������
+struct videoStruct
+{
+    unsigned int  sysWord;
+    unsigned char  idWord;
+    unsigned int  nowTime;
+    unsigned char  versionNumber;
+    unsigned char  totalChannel; //2/3
+    unsigned char  whichChannel; //1 2 3
+    unsigned char  videoFormat;  //1
+    unsigned short packetSize;    //5623
+    unsigned char  videoData[10000] = { 0 };
+
+};
+#pragma pack() // ���� #pragma pack(1) ������
+
 typedef enum {
     OF_STATUS_OK = 0,
     OF_STATUS_FAILURE,
@@ -105,6 +121,13 @@ typedef enum {
 
 SOCKET init_socket( );
 
+/**
+ * �ú����ڴ����UDP�׽����Ͻ������ݰ���
+ * ������һ����СΪ *len �Ļ���������ʹ��ʵ�ʽ��յ������ݸ��� pkt/len ������
+ * ��һ�ε���ʱ������ģʽ��������Ϊ�ͻ��˿����ڷ�����֮ǰ���������ӣ���
+ * ֮���Է�����������ѯ��ģʽ�����������ʹ�ڵȴ�һ��ʱ�䣨0.2�룩����δ�յ����ݰ���
+ * �򷵻� OF_STATUS_FAILURE����ʾ���ͷ�������ֹͣ���д��䡣
+ */
 of_status_t get_next_pkt(SOCKET so, void** pkt, int32_t* len);
 
 #endif //SIMPLE_CLIENT_SERVER_H_

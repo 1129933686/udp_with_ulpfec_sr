@@ -38,6 +38,8 @@ enum FecMaskType {
 
 static FecMaskType fec_mask_type = FecMaskType::kFecMaskRandom;  // �̶�Ϊ�����������
 
+static int packet_size;
+
 class PacketMaskTable {
  public:
   PacketMaskTable(FecMaskType fec_mask_type, int num_media_packets);
