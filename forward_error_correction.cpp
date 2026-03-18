@@ -88,16 +88,6 @@ void ForwardErrorCorrection::FecPacketsInit(int r) {
 	}
 }
 
-// 初次发送，序号清零
-void ForwardErrorCorrection::NumberClear(SOCKET so, int flags, const sockaddr* to, int tolen) {
-	std::vector<uint8_t> send_data = {0x20, 0x02, 0x04, 0x22};
-	if (sendto(so, reinterpret_cast<const char*>(send_data.data()), static_cast<int>(send_data.size()), flags, to, tolen) == SOCKET_ERROR) {
-		OF_PRINT_ERROR(("sendto() failed!\n"))
-		return;
-	}
-	printf("FEC:sending number clear signal successfully.\n");
-}
-
 int ForwardErrorCorrection::EncodeFec(const std::vector<std::unique_ptr<Packet>>& media_packets,
 	int32_t r,
 	int num_important_packets,
@@ -324,7 +314,7 @@ rtc::ArrayView<const uint8_t> LookUpInFecTable(const uint8_t* table,
 
 // bitrate等于0时表示不限制发送速率
 void ForwardErrorCorrection::SendByUlpfec(SOCKET so, const char* buf, int len, int flags, const sockaddr* to, int tolen, int k, int r, int bitrate, double packet_loss_rate) {
-	int ret;
+	int ret = -1;
 	// 邢启航09_06添加内容：随机丢包模拟
 	static auto seed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
 	static std::mt19937 gen(seed);  // 用时间种子初始化
@@ -505,48 +495,43 @@ ForwardErrorCorrection::DecodeFecResult ForwardErrorCorrection::DecodeFec(
 void ForwardErrorCorrection::InsertPacket(
 	const ReceivedPacket& received_packet,
 	RecoveredPacketList* recovered_packets) {
-	// **第一部分：丢弃旧的FEC包**
-	// 如果`received_fec_packets_`（已接收的FEC包列表）不为空
-	// 则检查是否需要丢弃旧的FEC包。
+    // **第一部分：丢弃旧的FEC包**
+    // 如果`received_fec_packets_`（已接收的FEC包列表）不为空
+    // 则检查是否需要丢弃旧的FEC包。
 	if (!received_fec_packets_.empty()) {
-		// 遍历`received_fec_packets_`列表，逐个检查FEC包的序列号是否过旧。
+        // 遍历`received_fec_packets_`列表，逐个检查FEC包的序列号是否过旧。
 		auto it = received_fec_packets_.begin();
 		while (it != received_fec_packets_.end()) {
 			// 计算当前接收到的包与FEC包之间的组号差异
 			uint16_t group_num_diff = MinDiff(received_packet.pkt->group_number, (*it)->pkt->group_number);
-			// 如果组号差异大于2，说明该FEC包过旧，
-			// 不再可能用于恢复任何丢失的媒体包，因此将其从列表中移除。
+            // 如果组号差异大于2，说明该FEC包过旧，
+            // 不再可能用于恢复任何丢失的媒体包，因此将其从列表中移除。
 			if (group_num_diff > 2) {
-				// 生成旧包的唯一键，从哈希表中删除
-				uint16_t old_fec_key = (static_cast<uint16_t>((*it)->pkt->group_number) << 8)
-					| static_cast<uint16_t>((*it)->pkt->sequence_number);
-				existing_fec_keys_.erase(old_fec_key);
-				// 从列表中删除旧的FEC包
-				it = received_fec_packets_.erase(it); 
+				it = received_fec_packets_.erase(it); // 从列表中删除旧的FEC包
 			}
 			else {
-				// 由于`received_fec_packets_`列表是按顺序排序的，
-				// 如果当前包的序列号差异不超过阈值，则后续包也一定满足条件。
-				// 因此可以直接退出循环，避免不必要的迭代。
+                // 由于`received_fec_packets_`列表是按顺序排序的，
+                // 如果当前包的序列号差异不超过阈值，则后续包也一定满足条件。
+                // 因此可以直接退出循环，避免不必要的迭代。
 				break;
 			}
 		}
 	}
 
-	// **第二部分：根据包的类型（FEC包或媒体包）进行不同处理**
+    // **第二部分：根据包的类型（FEC包或媒体包）进行不同处理**
 	if (received_packet.pkt->sequence_number > (received_packet.pkt->k - 1)) {
-		// 处理接收到的FEC包，通过解析包掩码来确定哪些媒体数据包被保护，并尝试使用FEC包来恢复任何丢失的媒体数据包。
-		// 同时，它负责维护一个有序的FEC包列表，确保处理效率和资源使用的平衡。
+        // 处理接收到的FEC包，通过解析包掩码来确定哪些媒体数据包被保护，并尝试使用FEC包来恢复任何丢失的媒体数据包。
+        // 同时，它负责维护一个有序的FEC包列表，确保处理效率和资源使用的平衡。
 		InsertFecPacket(*recovered_packets, received_packet);
 	}
 	else {
-		// 处理接收到的媒体数据包，并将其插入到恢复包列表中
+        // 处理接收到的媒体数据包，并将其插入到恢复包列表中
 		InsertMediaPacket(recovered_packets, received_packet);
 	}
 
-	// **第三部分：丢弃旧的恢复包**
-	// 调用`DiscardOldRecoveredPackets`函数，清理恢复包列表中过旧的包。
-	// 这可以防止恢复包列表无限增长，节省内存，同时确保只保留有用的包。
+    // **第三部分：丢弃旧的恢复包**
+    // 调用`DiscardOldRecoveredPackets`函数，清理恢复包列表中过旧的包。
+    // 这可以防止恢复包列表无限增长，节省内存，同时确保只保留有用的包。
 	DiscardOldRecoveredPackets(recovered_packets);
 }
 
@@ -554,135 +539,84 @@ void ForwardErrorCorrection::InsertFecPacket(
 	const RecoveredPacketList& recovered_packets,
 	const ReceivedPacket& received_packet) {
 
-	// ========== 优化后的重复包检测（O(1)复杂度） ==========
-    // 生成唯一键：group_number（8位）左移8位 + sequence_number（8位），组合为uint16_t
-	uint16_t fec_key = (static_cast<uint16_t>(received_packet.pkt->group_number) << 8)
-		| static_cast<uint16_t>(received_packet.pkt->sequence_number);
-
-	// 哈希表查重：存在则直接返回（丢弃重复包）
-	if (existing_fec_keys_.count(fec_key)) {
-		return;
+    // 检查重复的FEC包。
+	for (const auto& existing_fec_packet : received_fec_packets_) {
+		if (existing_fec_packet->pkt->sequence_number == received_packet.pkt->sequence_number &&
+			existing_fec_packet->pkt->group_number == received_packet.pkt->group_number) {
+			return; // 丢弃重复的FEC包数据。
+		}
 	}
-
-	// 创建一个新的ReceivedFecPacket对象来存储接收到的FEC包信息。
+    // 创建一个新的ReceivedFecPacket对象来存储接收到的FEC包信息。
 	std::unique_ptr<ReceivedFecPacket> fec_packet(new ReceivedFecPacket());
 	fec_packet->group_number = received_packet.group_number;
 	fec_packet->sequence_number = received_packet.sequence_number;
 	fec_packet->pkt = received_packet.pkt;
 
-	// 定义一个 uint16_t 类型的 packet_mask 变量，并将 fec_packet->pkt->packet_mask 赋给该变量
+    // 定义一个 uint16_t 类型的 packet_mask 变量，并将 fec_packet->pkt->packet_mask 赋给该变量
 	uint16_t packet_mask = fec_packet->pkt->packet_mask;
-	// 遍历 packet_mask 的每个位，检查哪些媒体包被保护
+    // 遍历 packet_mask 的每个位，检查哪些媒体包被保护
 	for (uint16_t bit_idx = 0; bit_idx < 16; ++bit_idx) {
 		if (packet_mask & (1 << (15 - bit_idx))) {
 			std::unique_ptr<ProtectedPacket> protected_packet(new ProtectedPacket());
-			// 计算受保护的包的组号和序列号
+            // 计算受保护的包的组号和序列号
 			protected_packet->group_number = fec_packet->group_number;
 			protected_packet->sequence_number = bit_idx;
-			// 初始化时不关联具体数据包
+            // 初始化时不关联具体数据包
 			protected_packet->pkt = nullptr;
 			fec_packet->protected_packets.push_back(std::move(protected_packet));
 		}
 	}
 
-	// 如果FEC包的包掩码全为零，说明这个FEC包无法保护任何媒体包，可以直接丢弃。
+    // 如果FEC包的包掩码全为零，说明这个FEC包无法保护任何媒体包，可以直接丢弃。
 	if (fec_packet->protected_packets.empty()) {
 		printf("Received FEC packet has an all-zero packet mask.");
 	}
 	else {
-		// 将FEC包中受保护的媒体包列表（protected_packets）与已经恢复的媒体包列表（recovered_packets）进行比较，
-		// 找到两者的交集（即FEC包保护的媒体包中哪些已经被恢复）。
-		// 对于这些已经恢复的媒体包，函数会更新FEC包中对应受保护包的指针，使其指向实际的媒体包数据。
+        // 将FEC包中受保护的媒体包列表（protected_packets）与已经恢复的媒体包列表（recovered_packets）进行比较，
+        // 找到两者的交集（即FEC包保护的媒体包中哪些已经被恢复）。
+        // 对于这些已经恢复的媒体包，函数会更新FEC包中对应受保护包的指针，使其指向实际的媒体包数据。
 		AssignRecoveredPackets(recovered_packets, fec_packet.get());
+        // 将新的FEC包添加到已接收的FEC包列表中，并按序列号排序。
+		received_fec_packets_.push_back(std::move(fec_packet));
+		received_fec_packets_.sort(SortablePacket::LessThan());
 
-		// 找到插入位置：遍历列表，找到第一个比新包“大”的元素，插入到其前面
-		auto insert_it = received_fec_packets_.begin();
-		while (insert_it != received_fec_packets_.end()) {
-			// 正序排序
-			if (SortablePacket::LessThan()(fec_packet.get(), insert_it->get())) {
-				break;
-			}
-			++insert_it;
-		}
-		// 插入到指定位置，维持列表有序
-		received_fec_packets_.insert(insert_it, std::move(fec_packet));
-		// 将新包的键存入哈希表
-		existing_fec_keys_.insert(fec_key);
-
-		// 溢出时同步删除哈希表中的键
+        // 如果列表过大，则移除最旧的FEC包。
 		if (received_fec_packets_.size() > max_fec_packets) {
-			const auto& old_fec = received_fec_packets_.front();
-			// 生成旧包的唯一键，从哈希表中删除
-			uint16_t old_fec_key = (static_cast<uint16_t>(old_fec->pkt->group_number) << 8)
-				| static_cast<uint16_t>(old_fec->pkt->sequence_number);
-			existing_fec_keys_.erase(old_fec_key);
-			// 移除旧包（原有逻辑不变）
 			received_fec_packets_.pop_front();
 		}
 		RTC_DCHECK_LE(received_fec_packets_.size(), max_fec_packets);
 	}
 }
 
-
 void ForwardErrorCorrection::InsertMediaPacket(
 	RecoveredPacketList* recovered_packets,
 	const ReceivedPacket& received_packet) {
-	// ========== 第一步：哈希表O(1)查重 ==========
-	// 生成媒体包唯一键：group_number（8位）<<8 + sequence_number（8位）→ uint16_t（无冲突）
-	uint16_t media_key = (static_cast<uint16_t>(received_packet.group_number) << 8)
-		| static_cast<uint16_t>(received_packet.sequence_number);
-	// 查重：存在则直接返回（丢弃重复包）
-	if (media_packet_index_.count(media_key)) {
-		return;
+	// 在已恢复的包列表中搜索重复的包。
+	for (const auto& recovered_packet : *recovered_packets) {
+		if (recovered_packet->pkt->sequence_number == received_packet.pkt->sequence_number &&
+			recovered_packet->pkt->group_number == received_packet.pkt->group_number) {
+			return; // 重复的包，不需要添加到列表中。
+		}
 	}
 
-	// ========== 第二步：创建新媒体包 ==========
 	// 创建一个新的RecoveredPacket对象来存储接收到的媒体包信息。
 	std::unique_ptr<RecoveredPacket> recovered_packet(new RecoveredPacket());
 	recovered_packet->group_number = received_packet.group_number;
 	recovered_packet->sequence_number = received_packet.sequence_number;
 	recovered_packet->pkt = received_packet.pkt;
 
-	// ========== 第三步：有序插入（保留原有LessThan比较，维持列表有序） ==========
-	SortablePacket::LessThan less_than;
-	// 找到第一个比新包“大”（更新）的元素位置，插入到前面（维持旧→新升序）
-	auto insert_it = recovered_packets->begin();
-	while (insert_it != recovered_packets->end() && less_than(*insert_it, recovered_packet.get())) {
-		++insert_it;
-	}
-	// 插入到指定位置（原有有序插入逻辑不变）
-	auto pkt_it = recovered_packets->insert(insert_it, std::move(recovered_packet));
-	RecoveredPacket* recovered_packet_ptr = pkt_it->get();
+	// TODO: 考虑使用二分搜索找到正确的位置插入新包，以避免排序。
+	RecoveredPacket* recovered_packet_ptr = recovered_packet.get();
 
-	// ========== 第四步：仅更新索引哈希表 ==========
-	media_packet_index_[media_key] = pkt_it; 
+	// 将新恢复的包添加到已恢复的包列表中。
+	recovered_packets->push_back(std::move(recovered_packet));
 
-	// ========== 核心优化：哈希表O(1)匹配takeout_seq1（不变） ==========
-	bool hasMatch = true;
-	while (hasMatch) {
-		hasMatch = false;
-		uint16_t takeout_key = (static_cast<uint16_t>(takeout_seq1.group_number) << 8)
-			| static_cast<uint16_t>(takeout_seq1.sequence_number);
-
-		auto find_it = media_packet_index_.find(takeout_key);
-		if (find_it != media_packet_index_.end()) {
-			auto& packet = *(find_it->second);
-			// 创建RecoveredPacket的副本
-		    auto buffer_packet = std::make_unique<ForwardErrorCorrection::RecoveredPacket>();
-			buffer_packet->group_number = packet->group_number;
-			buffer_packet->sequence_number = packet->sequence_number;
-			buffer_packet->pkt = packet->pkt;
-			// 更新takeout_seq1并入队到buffer_packets
-			takeout_seq1 = getNextSeq(*buffer_packet);
-			buffer_packets.push_back(std::move(buffer_packet));
-			hasMatch = true;
-		}
-	}
+	// 对已恢复的包列表进行排序，以确保它们按序列号顺序排列。
+	recovered_packets->sort(SortablePacket::LessThan());
 
 	// 更新覆盖FEC包的信息，根据新加入的媒体包调整。
 	UpdateCoveringFecPackets(*recovered_packet_ptr);
 }
-
 
 //解码恢复丢失的包，每次恢复一个，恢复一个即删除掉该FEC，再从头开始，直至所有包都恢复，和我们学过的高斯消元法比较类似
 size_t ForwardErrorCorrection::AttemptRecovery(
@@ -702,10 +636,6 @@ size_t ForwardErrorCorrection::AttemptRecovery(
 			recovered_packet->pkt = nullptr; // 初始化恢复包的指针
 			// 尝试恢复包，恢复过程是对 FEC 编码的逆运算
 			if (!RecoverPacket(**fec_packet_it, recovered_packet.get())) {
-				// 生成旧包的唯一键，从哈希表中删除
-				uint16_t old_fec_key = (static_cast<uint16_t>((*fec_packet_it)->pkt->group_number) << 8)
-					| static_cast<uint16_t>((*fec_packet_it)->pkt->sequence_number);
-				existing_fec_keys_.erase(old_fec_key);
 				// 如果无法恢复该包，则丢弃当前 FEC 包
 				fec_packet_it = received_fec_packets_.erase(fec_packet_it);
 				continue; // 继续下一个 FEC 包的处理
@@ -713,76 +643,24 @@ size_t ForwardErrorCorrection::AttemptRecovery(
 
 			++num_recovered_packets; // 成功恢复一个包，计数加一
 
-			// 生成媒体包唯一键：group_number（8位）<<8 + sequence_number（8位）→ uint16_t（无冲突）
-			uint16_t media_key = (static_cast<uint16_t>(recovered_packet->group_number) << 8)
-				| static_cast<uint16_t>(recovered_packet->sequence_number);
-
-			// 查重：存在则继续下一个 FEC 包的处理
-			if (media_packet_index_.count(media_key)) {
-				continue;
-			}
-
-			// 有序插入
-			SortablePacket::LessThan less_than;
-			// 找到第一个比新包“大”（更新）的元素位置，插入到前面（维持旧→新升序）
-			auto insert_it = recovered_packets->begin();
-			while (insert_it != recovered_packets->end() && less_than(*insert_it, recovered_packet.get())) {
-				++insert_it;
-			}
-
-			// 插入到指定位置（原有有序插入逻辑不变）
-			auto pkt_it = recovered_packets->insert(insert_it, std::move(recovered_packet));
-			RecoveredPacket* recovered_packet_ptr = pkt_it->get();
-			// 第四步：仅更新索引哈希表
-			media_packet_index_[media_key] = pkt_it; // 一次插入，同时支持查重和定位
-
-			// 哈希表O(1)匹配takeout_seq1
-			bool hasMatch = true;
-			while (hasMatch) {
-				hasMatch = false;
-				uint16_t takeout_key = (static_cast<uint16_t>(takeout_seq1.group_number) << 8)
-					| static_cast<uint16_t>(takeout_seq1.sequence_number);
-
-				auto find_it = media_packet_index_.find(takeout_key);
-				if (find_it != media_packet_index_.end()) {
-					auto& packet = *(find_it->second);
-					// 创建RecoveredPacket的副本
-					auto buffer_packet = std::make_unique<ForwardErrorCorrection::RecoveredPacket>();
-					buffer_packet->group_number = packet->group_number;
-					buffer_packet->sequence_number = packet->sequence_number;
-					buffer_packet->pkt = packet->pkt;
-					// 更新takeout_seq1并入队到buffer_packets
-					takeout_seq1 = getNextSeq(*buffer_packet);
-					buffer_packets.push_back(std::move(buffer_packet));
-					hasMatch = true;
-				}
-			}
-
+			auto* recovered_packet_ptr = recovered_packet.get();
+            // 将恢复的包添加到恢复包列表中，并更新覆盖该包的 FEC 包指针
+            // TODO: 考虑使用二分搜索来找到插入位置，以提高效率
+			recovered_packets->push_back(std::move(recovered_packet));
+			recovered_packets->sort(SortablePacket::LessThan()); // 对恢复包进行排序
 			// 更新所有覆盖该媒体包的 FEC 包的状态
 			UpdateCoveringFecPackets(*recovered_packet_ptr);
-
 			// 丢弃旧的已恢复包，保持列表的整洁
 			DiscardOldRecoveredPackets(recovered_packets);
-
-			// 生成旧包的唯一键，从哈希表中删除
-			uint16_t old_fec_key = (static_cast<uint16_t>((*fec_packet_it)->pkt->group_number) << 8)
-				| static_cast<uint16_t>((*fec_packet_it)->pkt->sequence_number);
-			existing_fec_keys_.erase(old_fec_key);
-
 			// 删除当前处理的 FEC 包，因为它已经被处理
 			fec_packet_it = received_fec_packets_.erase(fec_packet_it);
 
-			// 一旦恢复了一个包，检查是否可以恢复其他包
-			// 由于丢失的包数量现在可能减少，因此重新开始处理 FEC 包
+            // 一旦恢复了一个包，检查是否可以恢复其他包
+            // 由于丢失的包数量现在可能减少，因此重新开始处理 FEC 包
 			fec_packet_it = received_fec_packets_.begin();
 		}
 		else if (packets_missing == 0) {
 			// 如果当前 FEC 包下所有媒体包都已收到或恢复，则删除该 FEC 包
-			// 生成旧包的唯一键，从哈希表中删除
-			uint16_t old_fec_key = (static_cast<uint16_t>((*fec_packet_it)->pkt->group_number) << 8)
-				| static_cast<uint16_t>((*fec_packet_it)->pkt->sequence_number);
-			existing_fec_keys_.erase(old_fec_key);
-			// 删除该 FEC 包
 			fec_packet_it = received_fec_packets_.erase(fec_packet_it);
 		}
 		else {
@@ -793,7 +671,6 @@ size_t ForwardErrorCorrection::AttemptRecovery(
 
 	return num_recovered_packets; // 返回成功恢复的包数量
 }
-
 
 int ForwardErrorCorrection::NumCoveredPacketsMissing(
 	const ReceivedFecPacket& fec_packet) {
@@ -902,103 +779,27 @@ bool ForwardErrorCorrection::IsNewerSequenceNumber(uint8_t group_num1, uint8_t s
 
 void ForwardErrorCorrection::DiscardOldRecoveredPackets(
 	RecoveredPacketList* recovered_packets) {
-	// 将超出大小的recovered_packet移出，并判断是否移入buffer_packets
+	// 将超出 max_media_packets 数量的恢复包移动到 buffer_packets 列表中以供重用
 	while (recovered_packets->size() > max_media_packets) {
-		auto& frontRecovered = recovered_packets->front();
-		// ========== 步骤1：生成队头包的唯一哈希键 ==========
-		uint16_t media_key = (static_cast<uint16_t>(frontRecovered->group_number) << 8)
-			| static_cast<uint16_t>(frontRecovered->sequence_number);
-		// ========== 步骤2：复用环形序号判断逻辑，判断是否满足出队条件 ==========
-		bool isMatch = false;
-		// 条件：frontRecovered 比 takeout_seq1 新，或者两者序号完全相等
-        // 分两步判断：先判断是否相等，再判断是否更新
-		bool is_equal = (frontRecovered->group_number == takeout_seq1.group_number) &&
-			            (frontRecovered->sequence_number == takeout_seq1.sequence_number);
-		// IsNewerSequenceNumber(a_g, a_s, b_g, b_s) → 返回 (a_g,a_s) 是否比 (b_g,b_s) 新
-		bool is_newer = IsNewerSequenceNumber(
-			frontRecovered->group_number, frontRecovered->sequence_number,
-			takeout_seq1.group_number, takeout_seq1.sequence_number
-		);
-
-		// 满足条件：相等 或 更旧（这里逻辑要注意：出队时队头是旧包，需要判断是否“需要处理”）
-		// 修正逻辑：队头包是列表中最旧的包（因为列表是降序），超出大小时要判断是否“仍需处理”
-		// 需处理的条件：队头包 不早于 takeout_seq1（即 相等 或 更新）
-		if (is_equal || is_newer) {
-			isMatch = true;
-		}
-		if (isMatch) {
-			// 更新takeout_seq1并入队到buffer_packets
-			takeout_seq1 = getNextSeq(*frontRecovered);
-			buffer_packets.push_back(std::move(frontRecovered));
-			// ========== 关键：出队前删除哈希表索引 ==========
-			media_packet_index_.erase(media_key); // 同步删除哈希表索引
-			// 移除前端元素（自动释放内存）
-			recovered_packets->pop_front();
-		}
-		else {
-			// 不满足条件时，直接移除该元素（队头包已过时，无需处理）
-			// ========== 关键：出队前删除哈希表索引 ==========
-			media_packet_index_.erase(media_key); // 同步删除哈希表索引
-			// 移除队头元素（列表出队）
-			recovered_packets->pop_front();
-		}
+		auto& buffer_packet = recovered_packets->front();
+		buffer_packets.push_back(std::move(buffer_packet));
+		recovered_packets->pop_front();
 	}
 	RTC_DCHECK_LE(recovered_packets->size(), max_media_packets);
 }
 
-
 void ForwardErrorCorrection::ResetState(
 	RecoveredPacketList* recovered_packets) {
-	while (!recovered_packets->empty()) {
-		auto& frontRecovered = recovered_packets->front();
-
-		// ========== 步骤1：生成包的唯一哈希键（与插入时逻辑一致） ==========
-		uint16_t media_key = (static_cast<uint16_t>(frontRecovered->group_number) << 8)
-			| static_cast<uint16_t>(frontRecovered->sequence_number);
-
-		// ========== 步骤2：复用环形序号判断逻辑，判断是否满足入队条件 ==========
-		bool isMatch = false;
-
-		// 1. 判断是否与 takeout_seq1 完全相等
-		bool is_equal = (frontRecovered->group_number == takeout_seq1.group_number) &&
-			(frontRecovered->sequence_number == takeout_seq1.sequence_number);
-
-		// 2. 判断是否比 takeout_seq1 新（复用修正后的环形判断逻辑）
-		bool is_newer = ForwardErrorCorrection::IsNewerSequenceNumber(
-			frontRecovered->group_number, frontRecovered->sequence_number,
-			takeout_seq1.group_number, takeout_seq1.sequence_number
-		);
-
-		// 满足条件：相等 或 更旧（这里逻辑要注意：出队时队头是旧包，需要判断是否“需要处理”）
-		// 修正逻辑：队头包是列表中最旧的包（因为列表是降序），超出大小时要判断是否“仍需处理”
-		// 需处理的条件：队头包 不早于 takeout_seq1（即 相等 或 更新）
-		if (is_equal || is_newer) {
-			isMatch = true;
-		}
-
-		if (isMatch) {
-			// 更新takeout_seq1并入队到fec_buffer_packets
-			takeout_seq1 = getNextSeq(*frontRecovered);
-			buffer_packets.push_back(std::move(frontRecovered));
-			// ========== 关键：出队前删除哈希表索引 ==========
-			media_packet_index_.erase(media_key); // 同步删除索引
-			// 移除前端元素（自动释放内存）
-			recovered_packets->pop_front();
-		}
-		else {
-			// 不满足条件时，直接移除该元素（已过时，无需处理）
-			// ========== 关键：出队前删除哈希表索引（线程安全） ==========
-			media_packet_index_.erase(media_key); // 同步删除索引
-			// 移除队头元素（列表出队）
-			recovered_packets->pop_front();
-		}
+	// Move all recovered packets to buffer_packets for reuse.
+	for (const auto& recovered_packet : *recovered_packets) {
+		auto buffer_packet = std::make_unique<ForwardErrorCorrection::RecoveredPacket>();
+		buffer_packet->pkt = recovered_packet->pkt;
+		buffer_packets.push_back(std::move(buffer_packet));
 	}
-
-	// 清空冗余包列表和冗余包的哈希表
-	existing_fec_keys_.clear();
+	// Free the memory for any existing recovered packets, if the caller hasn't.
+	recovered_packets->clear();
 	received_fec_packets_.clear();
 }
-
 
 // recvfrom_fec
 int ForwardErrorCorrection::RecvByUlpfec(SOCKET so, char* buf, int len, int flags, sockaddr* from, int* fromlen) {
@@ -1011,48 +812,32 @@ int ForwardErrorCorrection::RecvByUlpfec(SOCKET so, char* buf, int len, int flag
 		expected_packet_size = 2000;
 		ret = get_next_pkt(so, &pkt_with_fpi, &expected_packet_size); // 这里有recvfrom操作
 		if (ret == OF_STATUS_OK) {
-			// 判断是否需要进行重置操作
-			if (expected_packet_size == 4) {
-				uint8_t* data_ptr = static_cast<uint8_t*>(pkt_with_fpi);
-				if (data_ptr[0] == 0x20 && data_ptr[1] == 0x02 && data_ptr[2] == 0x04 && data_ptr[3] == 0x22) {
-					// 打印重置包信息
-					printf("FEC:received number clear signal successfully\n");
-					// 清空recovered_packets（判断是否加入buffer_packets）、received_fec_packets_
-					ResetState(&recovered_packets);
-					// 重置序号
-					takeout_seq1 = { 0, 0 };
-				}
-			}
-			else {
-				// 非重置包，继续正常处理
-				auto received_packet = std::make_unique<ForwardErrorCorrection::ReceivedPacket>();
-				received_packet->pkt = rtc::scoped_refptr<ForwardErrorCorrection::Packet>(new ForwardErrorCorrection::Packet());
-				uint8_t* data_ptr = static_cast<uint8_t*>(pkt_with_fpi);
-				received_packet->pkt->packet_mask = (data_ptr[0] << 8) | data_ptr[1];
-				received_packet->pkt->group_number = data_ptr[2];
-				received_packet->pkt->sequence_number = data_ptr[3];
-				received_packet->pkt->k = data_ptr[4];
-				received_packet->pkt->data_length = (data_ptr[5] << 8) | data_ptr[6];
-				//printf("receiving symbol: group_number=%u, sequence_number=%u, data_length=%u\n", received_packet->pkt->group_number, received_packet->pkt->sequence_number, received_packet->pkt->data_length);
-				memcpy(received_packet->pkt->data, data_ptr + fec_head_size, expected_packet_size - fec_head_size); // 拷贝数据部分
+			// 正确接收到一个包
+			auto received_packet = std::make_unique<ForwardErrorCorrection::ReceivedPacket>();
+			received_packet->pkt = rtc::scoped_refptr<ForwardErrorCorrection::Packet>(new ForwardErrorCorrection::Packet());
+			uint8_t* data_ptr = static_cast<uint8_t*>(pkt_with_fpi);
+			received_packet->pkt->packet_mask = (data_ptr[0] << 8) | data_ptr[1];
+			received_packet->pkt->group_number = data_ptr[2];
+			received_packet->pkt->sequence_number = data_ptr[3];
+			received_packet->pkt->k = data_ptr[4];
+			received_packet->pkt->data_length = (data_ptr[5] << 8) | data_ptr[6];
+			memcpy(received_packet->pkt->data, data_ptr + fec_head_size, expected_packet_size - fec_head_size); // 拷贝数据部分
 
-				// received_packet->group_number和sequence_number用于排序
-				received_packet->group_number = received_packet->pkt->group_number;
-				received_packet->sequence_number = received_packet->pkt->sequence_number;
+			// received_packet->group_number和sequence_number用于排序
+			received_packet->group_number = received_packet->pkt->group_number;
+			received_packet->sequence_number = received_packet->pkt->sequence_number;
 
-				// 邢启航09_12:数据已拷贝完毕，可以安全释放（防止内存泄漏）
-				free(pkt_with_fpi);
-				pkt_with_fpi = NULL;
+			// 邢启航09_12:数据已拷贝完毕，可以安全释放（防止内存泄漏）
+			free(pkt_with_fpi);
+			pkt_with_fpi = NULL;
 
-				// 记录最长数据字段长度
-				if ((expected_packet_size - fec_head_size) > packet_size) {
-					packet_size = expected_packet_size - fec_head_size;
-				}
-
-				// 执行FEC解码
-				auto decode_result = DecodeFec(*received_packet, &recovered_packets);
+			// 记录最长数据字段长度
+			if ((expected_packet_size - fec_head_size) > packet_size) {
+				packet_size = expected_packet_size - fec_head_size;
 			}
 
+			// 执行FEC解码
+			auto decode_result = DecodeFec(*received_packet, &recovered_packets);
 		}
 		else if (ret == OF_STATUS_ERROR) {
 			// 接收出错，直接返回0表示无数据
@@ -1064,14 +849,12 @@ int ForwardErrorCorrection::RecvByUlpfec(SOCKET so, char* buf, int len, int flag
 	if (!buffer_packets.empty()) {
 		// 取出第一个包
 		auto& buffer_packet = buffer_packets.front();
-		// 打印包信息
-		//printf("received SRC symbol: group_number=%u, sequence_number=%u, data_length=%u\n", buffer_packet->pkt->group_number, buffer_packet->pkt->sequence_number, buffer_packet->pkt->data_length);
+#if print_message
+		printf("received SRC symbol: group_number=%u, sequence_number=%u, data_length=%u\n", buffer_packet->pkt->group_number, buffer_packet->pkt->sequence_number, buffer_packet->pkt->data_length);
+#endif
 		// 拷贝数据给上层应用
 		memcpy(buf, buffer_packet->pkt->data, buffer_packet->pkt->data_length);
 		len = buffer_packet->pkt->data_length;
-		//if (len == 0) {
-		//	printf("Error: received packet with zero length!\n");
-		//}
 		buffer_packets.pop_front();
 	}
 	else {
@@ -1080,17 +863,4 @@ int ForwardErrorCorrection::RecvByUlpfec(SOCKET so, char* buf, int len, int flag
 	}
 
 	return len;
-}
-
-// 计算下一个takeout_seq1的值
-SeqInfo ForwardErrorCorrection::getNextSeq(const RecoveredPacket& packet) {
-	SeqInfo nextSeq;
-	nextSeq.group_number = packet.group_number;
-	nextSeq.sequence_number = packet.sequence_number + 1;
-
-	if (nextSeq.sequence_number >= packet.pkt->k) {
-		nextSeq.sequence_number = 0;
-		nextSeq.group_number = nextSeq.group_number + 1;
-	}
-	return nextSeq;
 }

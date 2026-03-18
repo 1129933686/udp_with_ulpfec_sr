@@ -20,7 +20,6 @@ void sendto_fec(SOCKET so, const char* buf, int len, int flags, const sockaddr* 
 	if (!is_initialized) {
 		fec_instance.MediaPacketsInit(k); 
 		fec_instance.FecPacketsInit(r);
-        fec_instance.NumberClear(so, flags, to, tolen); 
 		is_initialized = true; // 标记为已初始化
 	}
 

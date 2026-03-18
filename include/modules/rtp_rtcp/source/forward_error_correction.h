@@ -18,16 +18,10 @@
 #include <vector>
 #include <chrono>  
 #include <immintrin.h> // 包含 AVX2 和 SSE 指令集，用于xor加速
-#include <unordered_set>   // 支持 std::unordered_set
-#include <unordered_map>  // 支持 std::unordered_map（索引哈希表用）
 #include "absl/container/inlined_vector.h"
 #include "api/scoped_refptr.h"
 #include "modules/rtp_rtcp/source/forward_error_correction_internal.h"
 
-typedef struct {
-    int8_t group_number;
-    int8_t sequence_number;
-} SeqInfo;
 class ForwardErrorCorrection {
 
  public:
@@ -149,8 +143,6 @@ class ForwardErrorCorrection {
 
   void FecPacketsInit(int r);
 
-  void NumberClear(SOCKET so, int flags, const sockaddr* to, int tolen);
-	
   struct DecodeFecResult {
       // Number of recovered media packets using FEC.
       size_t num_recovered_packets = 0;
@@ -253,8 +245,6 @@ class ForwardErrorCorrection {
   // for recovering lost packets.
   void DiscardOldRecoveredPackets(RecoveredPacketList* recovered_packets);
 
-  SeqInfo getNextSeq(const RecoveredPacket& packet);
-
   uint8_t packet_masks_[kUlpfecMaxMediaPackets * kUlpfecMaxPacketMaskSize];
 
   size_t packet_mask_size_;
@@ -280,11 +270,6 @@ class ForwardErrorCorrection {
   int packet_size = 0;
 
   int fec_head_size = 7; // ULPFEC头部大小
-  // recovered_packets和received_fec_packets_中包的索引哈希表
-  std::unordered_map<uint16_t, RecoveredPacketList::iterator> media_packet_index_;
-  std::unordered_set<uint16_t> existing_fec_keys_;
-
-  SeqInfo takeout_seq1 = { 0, 0 };
 };
 
 #endif  // MODULES_RTP_RTCP_SOURCE_FORWARD_ERROR_CORRECTION_H_
