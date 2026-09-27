@@ -55,3 +55,4 @@ export PATH=/your/Qt/version/gcc_64/bin:$PATH
 
 还需完成：
 linux平台下动态链接库文件生成
+linux平台动态链接库文件暂未生成
